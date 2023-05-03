@@ -3,8 +3,9 @@
 #[ink::contract]
 mod simple_contract {
     use scale::{Decode, Encode};
+    use sp_runtime::MultiAddress;
 
-    #[derive(Decode, Encode, Copy, Clone)]
+    #[derive(Decode, Encode, Copy, Clone, Debug)]
     #[cfg_attr(
         feature = "std",
         derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout)
@@ -12,8 +13,8 @@ mod simple_contract {
     pub struct AmmPool {
         pub token_0: u32,
         pub token_1: u32,
-        pub reserve_0: u32,
-        pub reserve_1: u32,
+        pub reserve_0: u128,
+        pub reserve_1: u128,
         pub total_supply: u32,
     }
 
@@ -21,9 +22,27 @@ mod simple_contract {
     pub struct Swapped {
         token_in: u32,
         token_out: u32,
-        token_in_amount: u32,
-        token_out_amount: u32,
+        token_in_amount: u128,
+        token_out_amount: u128,
         account: u32,
+    }
+
+    #[derive(scale::Encode)]
+    enum RuntimeCall {
+        /// In the node template runtime, pallet-balances takes index 4 in `construct_runtime`.
+        #[codec(index = 4)]
+        Balances(BalancesCall),
+    }
+
+    #[derive(scale::Encode)]
+    enum BalancesCall {
+        /// Index 0 corresponds to the `transfer_allow_death` extrinsics in pallet-balances.
+        #[codec(index = 0)]
+        Transfer {
+            dest: MultiAddress<AccountId, ()>,
+            #[codec(compact)]
+            value: u128,
+        },
     }
 
     /// Defines the storage of your contract.
@@ -55,17 +74,18 @@ mod simple_contract {
         }
 
         #[ink(message)]
-        pub fn swap(&mut self, account: u32, token_in: u32, amount: u32) -> Option<u32> {
+        pub fn swap(&mut self, account: u32, token_in: u32, amount: u128) -> u128 {
             // Check that the token is part of the pool
-            if token_in != self.pool.token_0 && token_in != self.pool.token_1 {
-                // TODO: check how to throw an error
-                return None;
-            }
-            if amount < 1 {
-                // TODO: check that amount is valid
-                // TODO: check how to throw an error
-                return None;
-            }
+            assert!(
+                token_in == self.pool.token_0 || token_in == self.pool.token_1,
+                "Token {} does not belong to liquidity pool",
+                token_in
+            );
+
+            // Check that amount is valid
+            // TODO: write proper check
+            assert!(amount > 1, "Amount ({}) is not valid", amount);
+
             let (token_in, token_out, reserve_in, reserve_out) = if token_in == self.pool.token_0 {
                 (
                     self.pool.token_0,
@@ -82,28 +102,47 @@ mod simple_contract {
                 )
             };
 
+            // Subtract 0.3% fee.
             let token_in_amount = amount * 997 / 1000;
 
-            // TODO: transfer amount of token_in to contract address
+            // Transfer amount of token_in to contract address.
+            if self
+                .env()
+                .call_runtime(&RuntimeCall::Balances(BalancesCall::Transfer {
+                    dest: MultiAddress::Id(self.env().account_id()),
+                    value: token_in_amount,
+                }))
+                .is_err()
+            {
+                panic!("Error transferring")
+            };
 
-            // Calculate amount to send of token out (including 0.3% fee)
+            // Calculate amount to send of token out (including 0.3% fee).
             let token_out_amount = (reserve_out * token_in_amount) / (reserve_in + token_in_amount);
 
-            // TODO: transfer amount_out of token_out to account
+            // Transfer amount_out of token_out to account.
+            if self
+                .env()
+                .transfer(self.env().caller(), token_out_amount)
+                .is_err()
+            {
+                panic!("Error transferring")
+            };
 
-            // TODO: update pool amounts. get balance of tokens from contract
-            // self.pool.reserve_0 = 0;
-            // self.pool.reserve_1 = 0;
+            // Update pool amounts. Get balance of tokens from contract.
+            // Note: there is only 1 token now (native token).
+            self.pool.reserve_0 = self.env().balance();
+            self.pool.reserve_1 = self.env().balance();
 
             Self::env().emit_event(Swapped {
                 token_in,
-                token_in_amount: amount,
+                token_in_amount,
                 token_out,
                 token_out_amount,
                 account,
             });
 
-            Some(token_out_amount)
+            token_out_amount
         }
 
         #[ink(message)]
