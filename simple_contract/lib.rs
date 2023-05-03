@@ -12,9 +12,18 @@ mod simple_contract {
     pub struct AmmPool {
         pub token_0: u32,
         pub token_1: u32,
-        pub token_0_amount: u32,
-        pub token_1_amount: u32,
+        pub reserve_0: u32,
+        pub reserve_1: u32,
         pub total_supply: u32,
+    }
+
+    #[ink(event)]
+    pub struct Swapped {
+        token_in: u32,
+        token_out: u32,
+        token_in_amount: u32,
+        token_out_amount: u32,
+        account: u32,
     }
 
     /// Defines the storage of your contract.
@@ -33,8 +42,8 @@ mod simple_contract {
                 pool: AmmPool {
                     token_0,
                     token_1,
-                    token_0_amount: Default::default(),
-                    token_1_amount: Default::default(),
+                    reserve_0: Default::default(),
+                    reserve_1: Default::default(),
                     total_supply: Default::default(),
                 },
             }
@@ -46,8 +55,55 @@ mod simple_contract {
         }
 
         #[ink(message)]
-        pub fn swap(&mut self) {
-            todo!()
+        pub fn swap(&mut self, account: u32, token_in: u32, amount: u32) -> Option<u32> {
+            // Check that the token is part of the pool
+            if token_in != self.pool.token_0 && token_in != self.pool.token_1 {
+                // TODO: check how to throw an error
+                return None;
+            }
+            if amount < 1 {
+                // TODO: check that amount is valid
+                // TODO: check how to throw an error
+                return None;
+            }
+            let (token_in, token_out, reserve_in, reserve_out) = if token_in == self.pool.token_0 {
+                (
+                    self.pool.token_0,
+                    self.pool.token_1,
+                    self.pool.reserve_0,
+                    self.pool.reserve_1,
+                )
+            } else {
+                (
+                    self.pool.token_1,
+                    self.pool.token_0,
+                    self.pool.reserve_1,
+                    self.pool.reserve_0,
+                )
+            };
+
+            let token_in_amount = amount * 997 / 1000;
+
+            // TODO: transfer amount of token_in to contract address
+
+            // Calculate amount to send of token out (including 0.3% fee)
+            let token_out_amount = (reserve_out * token_in_amount) / (reserve_in + token_in_amount);
+
+            // TODO: transfer amount_out of token_out to account
+
+            // TODO: update pool amounts. get balance of tokens from contract
+            // self.pool.reserve_0 = 0;
+            // self.pool.reserve_1 = 0;
+
+            Self::env().emit_event(Swapped {
+                token_in,
+                token_in_amount: amount,
+                token_out,
+                token_out_amount,
+                account,
+            });
+
+            Some(token_out_amount)
         }
 
         #[ink(message)]
