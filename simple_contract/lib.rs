@@ -147,12 +147,12 @@ mod simple_contract {
 
         #[ink(message)]
         pub fn add_liquidity(&mut self) {
-            todo!()
+            // todo!()
         }
 
         #[ink(message)]
         pub fn remove_liquidity(&mut self) {
-            todo!()
+            // todo!()
         }
 
         /// Simply returns the current value of our `bool`.
@@ -163,12 +163,12 @@ mod simple_contract {
 
         fn _mint(&mut self, _to: u32, amount: u32) {
             self.pool.total_supply += amount;
-            todo!()
+            // todo!()
         }
 
         fn _burn(&mut self, _from: u32, amount: u32) {
             self.pool.total_supply -= amount;
-            todo!()
+            // todo!()
         }
     }
 
