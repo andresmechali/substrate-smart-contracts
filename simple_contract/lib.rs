@@ -2,8 +2,10 @@
 
 #[ink::contract]
 mod simple_contract {
+    use ink::storage::Mapping;
     use scale::{Decode, Encode};
-    use sp_runtime::MultiAddress;
+
+    type TokenId = u32;
 
     #[derive(Decode, Encode, Copy, Clone, Debug)]
     #[cfg_attr(
@@ -11,38 +13,24 @@ mod simple_contract {
         derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout)
     )]
     pub struct AmmPool {
-        pub token_0: u32,
-        pub token_1: u32,
-        pub reserve_0: u128,
-        pub reserve_1: u128,
-        pub total_supply: u32,
+        pub token_0: TokenId,
+        pub token_1: TokenId,
     }
 
     #[ink(event)]
     pub struct Swapped {
-        token_in: u32,
-        token_out: u32,
-        token_in_amount: u128,
-        token_out_amount: u128,
-        account: u32,
+        token_in: TokenId,
+        token_out: TokenId,
+        token_in_amount: Balance,
+        token_out_amount: Balance,
+        account: AccountId,
     }
 
-    #[derive(scale::Encode)]
-    enum RuntimeCall {
-        /// In the node template runtime, pallet-balances takes index 4 in `construct_runtime`.
-        #[codec(index = 4)]
-        Balances(BalancesCall),
-    }
-
-    #[derive(scale::Encode)]
-    enum BalancesCall {
-        /// Index 0 corresponds to the `transfer_allow_death` extrinsics in pallet-balances.
-        #[codec(index = 0)]
-        Transfer {
-            dest: MultiAddress<AccountId, ()>,
-            #[codec(compact)]
-            value: u128,
-        },
+    #[ink(event)]
+    pub struct LiquidityAdded {
+        tokens: (TokenId, TokenId),
+        amounts: (Balance, Balance),
+        account: AccountId,
     }
 
     /// Defines the storage of your contract.
@@ -52,29 +40,63 @@ mod simple_contract {
     pub struct SimpleContract {
         /// Stores a single `AmmPool` value on the storage.
         pool: AmmPool,
+        /// Supply of tokens
+        reserves: Mapping<TokenId, Balance>,
+        /// Balances for accounts
+        balances: Mapping<(AccountId, TokenId), Balance>,
+        /// Fees accumulated in the contract
+        fees: Mapping<TokenId, Balance>,
     }
 
     impl SimpleContract {
         #[ink(constructor)]
-        pub fn new(token_0: u32, token_1: u32) -> Self {
+        pub fn new(token_0: TokenId, token_1: TokenId) -> Self {
             Self {
-                pool: AmmPool {
-                    token_0,
-                    token_1,
-                    reserve_0: Default::default(),
-                    reserve_1: Default::default(),
-                    total_supply: Default::default(),
-                },
+                pool: AmmPool { token_0, token_1 },
+                reserves: Mapping::default(),
+                balances: Mapping::default(),
+                fees: Mapping::default(),
             }
         }
 
         #[ink(constructor)]
         pub fn default() -> Self {
-            Self::new(123, 456)
+            Self::new(0, 1)
         }
 
         #[ink(message)]
-        pub fn swap(&mut self, account: u32, token_in: u32, amount: u128) -> u128 {
+        /// Adds liquidity to the pool. Amount is equal for each token.
+        pub fn add_liquidity(&mut self, amount: Balance) {
+            let (token_0, token_1) = (self.pool.token_0, self.pool.token_1);
+
+            // Update pool reserves
+            let old_token_0_amount = self.reserves.get(token_0).unwrap_or_default();
+            let new_token_0_amount = old_token_0_amount + amount;
+            self.reserves.insert(token_0, &new_token_0_amount);
+            let old_token_1_amount = self.reserves.get(token_1).unwrap_or_default();
+            let new_token_1_amount = old_token_1_amount + amount;
+            self.reserves.insert(token_1, &new_token_1_amount);
+
+            // Update account's balances
+            let account = self.env().caller();
+            let old_token_0_balance = self.balances.get((account, token_0)).unwrap_or_default();
+            let new_token_0_balance = old_token_0_balance + amount;
+            self.balances
+                .insert((account, token_0), &new_token_0_balance);
+            let old_token_1_balance = self.balances.get((account, token_1)).unwrap_or_default();
+            let new_token_1_balance = old_token_1_balance + amount;
+            self.balances
+                .insert((account, token_1), &new_token_1_balance);
+
+            Self::env().emit_event(LiquidityAdded {
+                tokens: (token_0, token_1),
+                amounts: (amount, amount),
+                account,
+            })
+        }
+
+        #[ink(message)]
+        pub fn swap(&mut self, token_in: TokenId, amount: Balance) -> Balance {
             // Check that the token is part of the pool
             assert!(
                 token_in == self.pool.token_0 || token_in == self.pool.token_1,
@@ -82,72 +104,70 @@ mod simple_contract {
                 token_in
             );
 
-            // Check that amount is valid
-            // TODO: write proper check
-            assert!(amount > 1, "Amount ({}) is not valid", amount);
-
-            let (token_in, token_out, reserve_in, reserve_out) = if token_in == self.pool.token_0 {
-                (
-                    self.pool.token_0,
-                    self.pool.token_1,
-                    self.pool.reserve_0,
-                    self.pool.reserve_1,
-                )
+            // Set proper tokens and reserves for pool
+            let (token_in, token_out) = if token_in == self.pool.token_0 {
+                (self.pool.token_0, self.pool.token_1)
             } else {
-                (
-                    self.pool.token_1,
-                    self.pool.token_0,
-                    self.pool.reserve_1,
-                    self.pool.reserve_0,
-                )
+                (self.pool.token_1, self.pool.token_0)
             };
+            let reserve_in = self.reserves.get(token_in).unwrap_or_default();
+            let reserve_out = self.reserves.get(token_out).unwrap_or_default();
 
             // Subtract 0.3% fee.
             let token_in_amount = amount * 997 / 1000;
 
-            // Transfer amount of token_in to contract address.
-            if self
-                .env()
-                .call_runtime(&RuntimeCall::Balances(BalancesCall::Transfer {
-                    dest: MultiAddress::Id(self.env().account_id()),
-                    value: token_in_amount,
-                }))
-                .is_err()
-            {
-                panic!("Error transferring")
-            };
+            // Update fees in storage.
+            let fee = amount - token_in_amount;
+            let old_fee = self.reserves.get(token_in).unwrap_or_default();
+            let new_fee = old_fee + fee;
+            self.reserves.insert(token_in, &new_fee);
 
             // Calculate amount to send of token out (including 0.3% fee).
-            let token_out_amount = (reserve_out * token_in_amount) / (reserve_in + token_in_amount);
 
-            // Transfer amount_out of token_out to account.
-            if self
-                .env()
-                .transfer(self.env().caller(), token_out_amount)
-                .is_err()
-            {
-                panic!("Error transferring")
+            let token_out_amount = if (reserve_in + token_in_amount) != 0 {
+                (reserve_out * token_in_amount) / (reserve_in + token_in_amount)
+            } else {
+                0
             };
 
-            // Update pool amounts. Get balance of tokens from contract.
-            // Note: there is only 1 token now (native token).
-            self.pool.reserve_0 = self.env().balance();
-            self.pool.reserve_1 = self.env().balance();
+            let pool_reserve_out = self.reserves.get(token_out).unwrap_or_default();
+            assert!(
+                token_out_amount <= pool_reserve_out,
+                "Pool does not have enough balance of token ({})",
+                token_out
+            );
+
+            // Transfer amount of token_in to contract address.
+            let new_reserve_in = reserve_in + token_in_amount;
+            self.reserves.insert(token_in, &new_reserve_in);
+            let old_balance_in = self
+                .balances
+                .get((self.env().caller(), token_in))
+                .unwrap_or_default();
+            let new_balance_in = old_balance_in + token_in_amount;
+            self.balances
+                .insert((self.env().caller(), token_in), &new_balance_in);
+
+            // Transfer amount_out of token_out to account.
+            let new_reserve_out = reserve_out - token_out_amount;
+            self.reserves.insert(token_out, &new_reserve_out);
+            let old_balance_out = self
+                .balances
+                .get((self.env().caller(), token_out))
+                .unwrap_or_default();
+            let new_balance_out = old_balance_out - token_out_amount;
+            self.balances
+                .insert((self.env().caller(), token_out), &new_balance_out);
 
             Self::env().emit_event(Swapped {
                 token_in,
                 token_in_amount,
                 token_out,
                 token_out_amount,
-                account,
+                account: self.env().caller(),
             });
 
             token_out_amount
-        }
-
-        #[ink(message)]
-        pub fn add_liquidity(&mut self) {
-            // todo!()
         }
 
         #[ink(message)]
@@ -155,20 +175,18 @@ mod simple_contract {
             // todo!()
         }
 
-        /// Simply returns the current value of our `bool`.
+        /// Returns the current value of the pool's reserves.
         #[ink(message)]
-        pub fn get(&self) -> AmmPool {
-            self.pool
+        pub fn get_reserve(&self, token: TokenId) -> Balance {
+            self.reserves.get(token).unwrap_or_default()
         }
 
-        fn _mint(&mut self, _to: u32, amount: u32) {
-            self.pool.total_supply += amount;
-            // todo!()
-        }
-
-        fn _burn(&mut self, _from: u32, amount: u32) {
-            self.pool.total_supply -= amount;
-            // todo!()
+        /// Returns the current value of account's balances for a given token.
+        #[ink(message)]
+        pub fn get_balance(&self, token: TokenId) -> Balance {
+            self.balances
+                .get((self.env().caller(), token))
+                .unwrap_or_default()
         }
     }
 
