@@ -118,9 +118,9 @@ mod simple_contract {
 
             // Update fees in storage.
             let fee = amount - token_in_amount;
-            let old_fee = self.reserves.get(token_in).unwrap_or_default();
+            let old_fee = self.fees.get(token_in).unwrap_or_default();
             let new_fee = old_fee + fee;
-            self.reserves.insert(token_in, &new_fee);
+            self.fees.insert(token_in, &new_fee);
 
             // Calculate amount to send of token out (including 0.3% fee).
 
