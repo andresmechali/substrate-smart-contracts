@@ -188,6 +188,12 @@ mod simple_contract {
                 .get((self.env().caller(), token))
                 .unwrap_or_default()
         }
+
+        /// Returns the total accumulated fees.
+        #[ink(message)]
+        pub fn get_fees(&self, token: TokenId) -> Balance {
+            self.fees.get(token).unwrap_or_default()
+        }
     }
 
     // /// Unit tests in Rust are normally defined within such a `#[cfg(test)]`
